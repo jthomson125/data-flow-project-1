@@ -1,8 +1,12 @@
 import json
+import argparse
 import apache_beam as beam
 from apache_beam import pipeline
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.gcp.internal.clients import bigquery
+from apache_beam.options.pipeline_options import SetupOptions
+import logging
+
 
 class TransformMessage(beam.DoFn):
     def process(self, element):
@@ -38,8 +42,8 @@ class CustomerAddress(beam.DoFn):
             if k == 0:
                 address_dict['order_city'] = address[1]
             if k == 0:
-                state_code = address[k].split(" ")
-                zipcode = [int(s) for s in address[k].split() if s.isdigit()]
+                state_code = address[2].split(" ")
+                zipcode = [int(s) for s in address[2].split() if s.isdigit()]
                 if state_code[1] is not None:
                     address_dict['order_state_code'] = state_code[1]
                 if zipcode[0] is not None:
@@ -58,7 +62,6 @@ class CostTotal(beam.DoFn):
         shipping = element['cost_shipping']
         tax = element['cost_tax']
         element['cost_total'] = float(price + shipping + tax)
-
 
         print(element)
         return [element]
@@ -150,8 +153,27 @@ class module_bigquery(beam.DoFn):
         return [new_set]
 
 
-def run():
-    pipeline_options = PipelineOptions(streaming=True)
+class module(beam.DoFn):
+    def process(self, element):
+        print("module")
+        list_new = []
+        for k in element['order_items']:
+            list_new.append(k['id'])
+        element['items_list'] = list_new
+        print(list_new)
+        columns_to_extract = ['order_id', 'items_list']
+        new_set = {k: element[k] for k in columns_to_extract}
+
+        return [new_set]
+
+
+def run(argv=None, save_main_session=True):
+    parser = argparse.ArgumentParser()
+    pipeline_args = parser.parse_args(argv)
+
+    pipeline_options = PipelineOptions(pipeline_args, streaming=True)
+
+    pipeline_options.view_as(SetupOptions).save_main_session = save_main_session
 
     with beam.Pipeline(options=pipeline_options) as p:
         table_names = (p | "create input" >> beam.Create(
@@ -169,10 +191,12 @@ def run():
             schema=table_schema,
             write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
             create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED)
-
-
-
+        final_addition = second
+        final_addition | beam.ParDo(module()) | beam.Map(
+                lambda text: (str(text)).encode('utf-8')) | beam.io.WriteToPubSub(
+                'projects/york-cdf-start/topics/dataflow-order-stock-update')
 
 
 if __name__ == '__main__':
+    logging.getLogger().setLevel(logging.INFO)
     run()
